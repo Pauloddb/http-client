@@ -6,9 +6,9 @@ mod models;
 async fn main() -> std::io::Result<()> {
     // NOVA API simplificada!
     let mut terminal = ratatui::init();
-    let mut app = app::App::new();
+    let mut my_app = app::App::new();
 
-    let result = app::run_app(&mut terminal, &mut app).await;
+    let result = my_app.run(&mut terminal).await;
 
     ratatui::restore(); // Sempre restaura, mesmo se houver erro
     result

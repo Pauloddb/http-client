@@ -1,17 +1,15 @@
 use std::collections::HashMap;
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    style::Stylize,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
-use reqwest::{Client, Response, header::HeaderMap};
+use ratatui_textarea::TextArea; // ✅ Confirmado na docs.rs [^34^]
+use reqwest::Client;
 
 use crate::{
     components::method_selector::MethodSelector,
@@ -26,8 +24,7 @@ pub struct App {
     url: String,
     url_cursor: usize,
     method_selector: MethodSelector,
-    body: String,
-    body_cursor: usize,
+    body_editor: TextArea<'static>,
     headers: HashMap<String, String>,
     response: String,
     client: Client,
@@ -35,25 +32,54 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let mut body_editor = TextArea::default(); // ✅ Confirmado [^14^]
+
+        // ✅ set_tab_length confirmado na docs [^14^]
+        body_editor.set_tab_length(2);
+
+        // ✅ set_hard_tab_indent confirmado [^14^]
+        body_editor.set_hard_tab_indent(true);
+
+        // ✅ set_placeholder_text confirmado [^14^]
+        body_editor.set_placeholder_text("{\n  \"key\": \"value\"\n}");
+
+        // ✅ set_placeholder_style confirmado [^14^]
+        body_editor.set_placeholder_style(
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        );
+
+        // ✅ set_selection_style confirmado [^14^]
+        body_editor.set_selection_style(
+            Style::default()
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        );
+
+        // ✅ set_cursor_line_style confirmado [^14^]
+        body_editor.set_cursor_line_style(Style::default().add_modifier(Modifier::UNDERLINED));
+
         Self {
             focus: FocusManager::new(),
             url: String::new(),
             url_cursor: 0,
             method_selector: MethodSelector::new(),
-            body: String::new(),
-            body_cursor: 0,
+            body_editor,
             headers: HashMap::new(),
-            response: String::from("Aguardando requisição..."),
+            response: String::from(
+                "Ctrl+R: enviar | Ctrl+Q: sair | Ctrl+N/P: navegar | Ctrl+F: formatar JSON",
+            ),
             client: Client::new(),
         }
     }
 
-    pub fn render_input(
+    fn render_input(
         &self,
+        frame: &mut Frame,
         area: Rect,
         title: &str,
         content: &str,
-        frame: &mut Frame,
         is_focused: bool,
         cursor_pos: usize,
     ) {
@@ -72,7 +98,7 @@ impl App {
 
         let text = if content.is_empty() && is_focused {
             Line::from(vec![Span::styled(
-                "Digite uma url...",
+                "https://api.example.com/users",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::ITALIC),
@@ -90,14 +116,8 @@ impl App {
         }
     }
 
-    pub fn render_text_area(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        title: &str,
-        content: &str,
-        is_focused: bool,
-    ) {
+    // ✅ &mut self necessário porque TextArea mantém estado interno do cursor
+    fn render_body(&mut self, frame: &mut Frame, area: Rect, is_focused: bool) {
         let border_style = if is_focused {
             Style::default()
                 .fg(Color::Yellow)
@@ -107,226 +127,231 @@ impl App {
         };
 
         let block = Block::default()
+            .title(" Body ")
             .borders(Borders::ALL)
-            .title(title)
             .border_style(border_style);
 
-        let paragraph = Paragraph::new(content).block(block);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        frame.render_widget(paragraph, area);
+        // ✅ &self.body_editor funciona porque &TextArea implementa Widget [^14^]
+        frame.render_widget(&self.body_editor, inner);
     }
-}
 
-pub async fn run_app(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-) -> std::io::Result<()> {
-    loop {
-        terminal.draw(|frame| {
-            let area = frame.area();
+    fn render_response(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .title(" Response ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan));
 
-            let chunks = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
+        // Tenta formatar JSON
+        let content = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&self.response) {
+            serde_json::to_string_pretty(&json).unwrap_or_else(|_| self.response.clone())
+        } else {
+            self.response.clone()
+        };
 
-            let up_chunks =
-                Layout::horizontal([Constraint::Fill(1), Constraint::Length(15)]).split(chunks[0]);
+        frame.render_widget(
+            Paragraph::new(content)
+                .block(block)
+                .wrap(Wrap { trim: true }),
+            area,
+        );
+    }
 
-            let down_chunks =
-                Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(chunks[1]);
+    // ✅ input() aceita KeyEvent diretamente com feature crossterm [^14^][^34^]
+    fn handle_body_input(&mut self, key: crossterm::event::KeyEvent) {
+        self.body_editor.input(key); // Conversão automática crossterm → Input
+    }
 
-            // Rendering
-            app.render_input(
-                up_chunks[0],
-                " URL ",
-                app.url.as_str(),
-                frame,
-                app.focus.is_focused(Field::Url),
-                app.url_cursor,
+    async fn handle_request(&mut self) {
+        let method_str = self.method_selector.method().as_str();
+
+        let mut req = match method_str {
+            "GET" => self.client.get(&self.url),
+            "POST" => self.client.post(&self.url),
+            "DELETE" => self.client.delete(&self.url),
+            "PUT" => self.client.put(&self.url),
+            "PATCH" => self.client.patch(&self.url),
+            _ => {
+                self.response = format!("Método não suportado: {}", method_str);
+                return;
+            }
+        };
+
+        // Headers
+        for (key, value) in &self.headers {
+            req = req.header(key, value);
+        }
+
+        // ✅ lines() retorna &[String], join("\n") retorna String [^14^]
+        if matches!(method_str, "POST" | "PUT" | "PATCH") {
+            let body = self.body_editor.lines().join("\n");
+            if !body.is_empty() {
+                req = req.body(body);
+            }
+        }
+
+        match req.send().await {
+            Ok(res) => {
+                let status = res.status();
+                let text = res.text().await.unwrap_or_default();
+                self.response = format!("Status: {}\n\n{}", status, text);
+            }
+            Err(e) => {
+                self.response = format!("Erro: {}", e);
+            }
+        }
+    }
+
+    fn handle_url_input(&mut self, key: crossterm::event::KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return;
+        }
+
+        match key.code {
+            KeyCode::Char(c) => {
+                self.url.insert(self.url_cursor, c);
+                self.url_cursor += 1;
+            }
+            KeyCode::Backspace => {
+                if self.url_cursor > 0 {
+                    self.url_cursor -= 1;
+                    self.url.remove(self.url_cursor);
+                }
+            }
+            KeyCode::Delete => {
+                if self.url_cursor < self.url.len() {
+                    self.url.remove(self.url_cursor);
+                }
+            }
+            KeyCode::Left => {
+                if self.url_cursor > 0 {
+                    self.url_cursor -= 1;
+                }
+            }
+            KeyCode::Right => {
+                if self.url_cursor < self.url.len() {
+                    self.url_cursor += 1;
+                }
+            }
+            KeyCode::Home => self.url_cursor = 0,
+            KeyCode::End => self.url_cursor = self.url.len(),
+            _ => {}
+        }
+    }
+
+    fn format_body_json(&mut self) {
+        let content = self.body_editor.lines().join("\n");
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            let formatted = serde_json::to_string_pretty(&json).unwrap_or_default();
+
+            // ✅ TextArea::from() aceita iterator de String [^14^]
+            let lines: Vec<String> = formatted.lines().map(|s| s.to_string()).collect();
+
+            // Recria preservando configurações
+            let mut new_editor = TextArea::from(lines);
+            new_editor.set_tab_length(2);
+            new_editor.set_hard_tab_indent(true);
+            new_editor.set_placeholder_text("{\n  \"key\": \"value\"\n}");
+            new_editor.set_placeholder_style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             );
-
-            app.render_text_area(
-                frame,
-                down_chunks[0],
-                " Body ",
-                app.body.as_str(),
-                app.focus.is_focused(Field::Body),
+            new_editor.set_selection_style(
+                Style::default()
+                    .bg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
             );
-            app.render_text_area(
-                frame,
-                down_chunks[1],
-                " Response ",
-                app.response.as_str(),
-                app.focus.is_focused(Field::Response),
-            );
+            new_editor.set_cursor_line_style(Style::default().add_modifier(Modifier::UNDERLINED));
 
-            app.method_selector
-                .set_focus(app.focus.is_focused(Field::Method));
-            app.method_selector.render(frame, up_chunks[1]);
-        })?;
+            self.body_editor = new_editor;
+        }
+    }
 
-        // Event handling
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            if key.modifiers == KeyModifiers::CONTROL {
-                match key.code {
-                    KeyCode::Char('n') => {
-                        app.focus.next();
-                        app.method_selector
-                            .set_focus(app.focus.is_focused(Field::Method));
+    pub async fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
+        loop {
+            terminal.draw(|frame| {
+                let area = frame.area();
+
+                let chunks =
+                    Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
+
+                let up_chunks = Layout::horizontal([Constraint::Fill(1), Constraint::Length(15)])
+                    .split(chunks[0]);
+
+                let down_chunks =
+                    Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(chunks[1]);
+
+                // URL
+                self.render_input(
+                    frame,
+                    up_chunks[0],
+                    " URL ",
+                    &self.url,
+                    self.focus.is_focused(Field::Url),
+                    self.url_cursor,
+                );
+
+                // Body - ✅ &mut self necessário
+                self.render_body(frame, down_chunks[0], self.focus.is_focused(Field::Body));
+
+                // Response
+                self.render_response(frame, down_chunks[1]);
+
+                // Method
+                self.method_selector
+                    .set_focus(self.focus.is_focused(Field::Method));
+                self.method_selector.render(frame, up_chunks[1]);
+            })?;
+
+            if let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+            {
+                // Atalhos globais
+                if key.modifiers == KeyModifiers::CONTROL {
+                    match key.code {
+                        KeyCode::Char('q') => break Ok(()),
+                        KeyCode::Char('r') => {
+                            self.handle_request().await;
+                            continue;
+                        }
+                        KeyCode::Char('n') => {
+                            self.focus.next();
+                            self.method_selector
+                                .set_focus(self.focus.is_focused(Field::Method));
+                            continue;
+                        }
+                        KeyCode::Char('p') => {
+                            self.focus.previous();
+                            self.method_selector
+                                .set_focus(self.focus.is_focused(Field::Method));
+                            continue;
+                        }
+                        KeyCode::Char('f') => {
+                            if self.focus.is_focused(Field::Body) {
+                                self.format_body_json();
+                            }
+                            continue;
+                        }
+                        _ => {}
                     }
-                    KeyCode::Char('p') => {
-                        app.focus.previous();
-                        app.method_selector
-                            .set_focus(app.focus.is_focused(Field::Method));
-                    }
-                    KeyCode::Char('r') => {
-                        app.response = String::from("Processando requisição...");
-                        handle_request(app).await;
-                    }
-                    KeyCode::Char('q') => break Ok(()),
+                }
+
+                // Input por campo
+                match self.focus.current() {
+                    Field::Url => self.handle_url_input(key),
+                    Field::Body => self.handle_body_input(key),
+                    Field::Method => match key.code {
+                        KeyCode::Left => self.method_selector.previous(),
+                        KeyCode::Right => self.method_selector.next(),
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
-
-            match app.focus.current() {
-                Field::Url => handle_url_input(app, key),
-                Field::Body => handle_body_input(app, key),
-                Field::Headers => {}
-                Field::Response => {}
-                Field::Method => match key.code {
-                    KeyCode::Left => app.method_selector.previous(),
-                    KeyCode::Right => app.method_selector.next(),
-                    _ => {}
-                },
-            }
-        }
-    }
-}
-
-fn handle_url_input(app: &mut App, key: event::KeyEvent) {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return;
-    }
-
-    match key.code {
-        KeyCode::Char(c) => {
-            // Insere na posição do cursor, não no final
-            app.url.insert(app.url_cursor, c);
-            app.url_cursor += 1;
-        }
-        KeyCode::Backspace => {
-            if app.url_cursor > 0 {
-                app.url_cursor -= 1;
-                app.url.remove(app.url_cursor);
-            }
-        }
-        KeyCode::Delete => {
-            if app.url_cursor < app.url.len() {
-                app.url.remove(app.url_cursor);
-            }
-        }
-        KeyCode::Left => {
-            if app.url_cursor > 0 {
-                app.url_cursor -= 1;
-            }
-        }
-        KeyCode::Right => {
-            if app.url_cursor < app.url.len() {
-                app.url_cursor += 1;
-            }
-        }
-        KeyCode::Home => {
-            app.url_cursor = 0;
-        }
-        KeyCode::End => {
-            app.url_cursor = app.url.len();
-        }
-        _ => {}
-    }
-}
-
-fn handle_body_input(app: &mut App, key: event::KeyEvent) {
-    match key.code {
-        KeyCode::Char(c) => {
-            // Insere na posição do cursor, não no final
-            app.body.insert(app.body_cursor, c);
-            app.body_cursor += 1;
-        }
-        KeyCode::Backspace => {
-            if app.body_cursor > 0 {
-                app.body_cursor -= 1;
-                app.body.remove(app.body_cursor);
-            }
-        }
-        KeyCode::Delete => {
-            if app.body_cursor < app.body.len() {
-                app.body.remove(app.body_cursor);
-            }
-        }
-        KeyCode::Left => {
-            if app.body_cursor > 0 {
-                app.body_cursor -= 1;
-            }
-        }
-        KeyCode::Right => {
-            if app.body_cursor < app.body.len() {
-                app.body_cursor += 1;
-            }
-        }
-        KeyCode::Home => {
-            app.body_cursor = 0;
-        }
-        KeyCode::End => {
-            app.body_cursor = app.body.len();
-        }
-        KeyCode::Enter => {
-            app.body.insert(app.body_cursor, '\n');
-            app.body_cursor += 1;
-        }
-        KeyCode::Tab => {
-            app.body.insert_str(app.body_cursor, "    ");
-            app.body_cursor += 1;
-        }
-        _ => {}
-    }
-}
-
-async fn handle_request(app: &mut App) {
-    // Cria builder base
-    let mut req = match app.method_selector.method().as_str() {
-        "GET" => app.client.get(&app.url),
-        "POST" => app.client.post(&app.url),
-        "DELETE" => app.client.delete(&app.url),
-        "PUT" => app.client.put(&app.url),
-        "PATCH" => app.client.patch(&app.url),
-        _ => {
-            app.response = format!("Método não suportado: {}", app.method_selector.method());
-            return;
-        }
-    };
-
-    // Adiciona headers se houver
-    for (key, value) in &app.headers {
-        req = req.header(key, value);
-    }
-
-    // Adiciona body para métodos que suportam
-    match app.method_selector.method().as_str() {
-        "POST" | "PUT" | "PATCH" => {
-            req = req.body(app.body.clone());
-        }
-        _ => {}
-    }
-
-    // Envia e processa resposta
-    match req.send().await {
-        Ok(res) => {
-            let status = res.status();
-            let text = res.text().await.unwrap_or_default();
-            app.response = format!("Status: {}\n\n{}", status, text);
-        }
-        Err(e) => {
-            app.response = format!("Erro: {}", e);
         }
     }
 }
