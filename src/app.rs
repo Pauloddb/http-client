@@ -6,15 +6,20 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
-use ratatui_textarea::TextArea; // ✅ Confirmado na docs.rs [^34^]
+use ratatui_textarea::TextArea;
 use reqwest::Client;
 
 use crate::{
     components::{
-        body::render_body, help::render_help, method_selector::MethodSelector,
-        response::render_response, url::render_url,
+        body::render_body,
+        help::render_help,
+        method_selector::MethodSelector,
+        response::{handle_response_scroll, render_response},
+        url::render_url,
     },
     models::{
         focus::{Field, FocusManager},
@@ -30,6 +35,8 @@ pub struct App {
     pub body_editor: TextArea<'static>,
     pub headers: HashMap<String, String>,
     pub response: String,
+    pub response_scroll: (u16, u16), // (y, x)
+    pub response_scrollbar_state: ScrollbarState,
     pub client: Client,
     pub is_headers_focused: bool,
     pub is_help_focused: bool,
@@ -73,6 +80,8 @@ impl App {
             body_editor,
             headers: HashMap::new(),
             response: String::from("Waiting for response..."),
+            response_scroll: (0, 0),
+            response_scrollbar_state: ScrollbarState::default(),
             client: Client::new(),
             is_headers_focused: false,
             is_help_focused: false,
@@ -244,7 +253,14 @@ impl App {
                 );
 
                 // Response
-                render_response(self, frame, down_chunks[1]);
+                render_response(
+                    self,
+                    frame,
+                    down_chunks[1],
+                    self.focus.is_focused(Field::Response)
+                        && !self.is_headers_focused
+                        && !self.is_help_focused,
+                );
 
                 // Method
                 self.method_selector.set_focus(
@@ -328,6 +344,9 @@ impl App {
                             }
                             _ => {}
                         }
+                    }
+                    Field::Response if !self.is_headers_focused && !self.is_help_focused => {
+                        handle_response_scroll(self, key)
                     }
                     _ => {}
                 }
