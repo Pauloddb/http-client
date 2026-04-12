@@ -5,14 +5,17 @@ use ratatui::{
     Frame,
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use ratatui_textarea::TextArea; // ✅ Confirmado na docs.rs [^34^]
 use reqwest::Client;
 
 use crate::{
-    components::method_selector::MethodSelector,
+    components::{
+        body::render_body, help::render_help, method_selector::MethodSelector,
+        response::render_response, url::render_url,
+    },
     models::{
         focus::{Field, FocusManager},
         method::HttpMethod,
@@ -20,14 +23,16 @@ use crate::{
 };
 
 pub struct App {
-    focus: FocusManager,
-    url: String,
-    url_cursor: usize,
-    method_selector: MethodSelector,
-    body_editor: TextArea<'static>,
-    headers: HashMap<String, String>,
-    response: String,
-    client: Client,
+    pub focus: FocusManager,
+    pub url: String,
+    pub url_cursor: usize,
+    pub method_selector: MethodSelector,
+    pub body_editor: TextArea<'static>,
+    pub headers: HashMap<String, String>,
+    pub response: String,
+    pub client: Client,
+    pub is_headers_focused: bool,
+    pub is_help_focused: bool,
 }
 
 impl App {
@@ -67,97 +72,14 @@ impl App {
             method_selector: MethodSelector::new(),
             body_editor,
             headers: HashMap::new(),
-            response: String::from(
-                "Ctrl+R: enviar | Ctrl+Q: sair | Ctrl+N/P: navegar | Ctrl+F: formatar JSON",
-            ),
+            response: String::from("Waiting for response..."),
             client: Client::new(),
-        }
-    }
-
-    fn render_input(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        title: &str,
-        content: &str,
-        is_focused: bool,
-        cursor_pos: usize,
-    ) {
-        let border_style = if is_focused {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(border_style);
-
-        let text = if content.is_empty() && is_focused {
-            Line::from(vec![Span::styled(
-                "https://api.example.com/users",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )])
-        } else {
-            Line::from(content)
-        };
-
-        let paragraph = Paragraph::new(text).block(block);
-        frame.render_widget(paragraph, area);
-
-        if is_focused {
-            let inner_x = area.x + 1 + cursor_pos.min(content.len()) as u16;
-            frame.set_cursor_position(Position::new(inner_x, area.y + 1));
+            is_headers_focused: false,
+            is_help_focused: false,
         }
     }
 
     // ✅ &mut self necessário porque TextArea mantém estado interno do cursor
-    fn render_body(&mut self, frame: &mut Frame, area: Rect, is_focused: bool) {
-        let border_style = if is_focused {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-
-        let block = Block::default()
-            .title(" Body ")
-            .borders(Borders::ALL)
-            .border_style(border_style);
-
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        // ✅ &self.body_editor funciona porque &TextArea implementa Widget [^14^]
-        frame.render_widget(&self.body_editor, inner);
-    }
-
-    fn render_response(&self, frame: &mut Frame, area: Rect) {
-        let block = Block::default()
-            .title(" Response ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
-
-        // Tenta formatar JSON
-        let content = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&self.response) {
-            serde_json::to_string_pretty(&json).unwrap_or_else(|_| self.response.clone())
-        } else {
-            self.response.clone()
-        };
-
-        frame.render_widget(
-            Paragraph::new(content)
-                .block(block)
-                .wrap(Wrap { trim: true }),
-            area,
-        );
-    }
 
     // ✅ input() aceita KeyEvent diretamente com feature crossterm [^14^][^34^]
     fn handle_body_input(&mut self, key: crossterm::event::KeyEvent) {
@@ -276,6 +198,11 @@ impl App {
             terminal.draw(|frame| {
                 let area = frame.area();
 
+                let background_color = Color::Rgb(20, 20, 20);
+
+                let background = Block::default().style(Style::default().bg(background_color));
+                frame.render_widget(background, area);
+
                 let chunks =
                     Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(area);
 
@@ -285,26 +212,59 @@ impl App {
                 let down_chunks =
                     Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(chunks[1]);
 
+                let popup_area =
+                    area.centered(Constraint::Percentage(60), Constraint::Percentage(60));
+
+                let headers_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(Line::from("Headers").centered())
+                    .style(Style::default().fg(Color::Yellow).bg(background_color));
+
                 // URL
-                self.render_input(
+                render_url(
                     frame,
                     up_chunks[0],
-                    " URL ",
+                    "URL",
                     &self.url,
-                    self.focus.is_focused(Field::Url),
+                    "https://api.example.com/users",
+                    self.focus.is_focused(Field::Url)
+                        && !self.is_headers_focused
+                        && !self.is_help_focused,
                     self.url_cursor,
                 );
 
                 // Body - ✅ &mut self necessário
-                self.render_body(frame, down_chunks[0], self.focus.is_focused(Field::Body));
+                render_body(
+                    self,
+                    frame,
+                    down_chunks[0],
+                    self.focus.is_focused(Field::Body)
+                        && !self.is_headers_focused
+                        && !self.is_help_focused,
+                );
 
                 // Response
-                self.render_response(frame, down_chunks[1]);
+                render_response(self, frame, down_chunks[1]);
 
                 // Method
-                self.method_selector
-                    .set_focus(self.focus.is_focused(Field::Method));
+                self.method_selector.set_focus(
+                    self.focus.is_focused(Field::Method)
+                        && !self.is_headers_focused
+                        && !self.is_help_focused,
+                );
                 self.method_selector.render(frame, up_chunks[1]);
+
+                // Headers
+                if self.is_headers_focused {
+                    frame.render_widget(Clear, popup_area);
+                    frame.render_widget(headers_block, popup_area);
+                }
+
+                // Help
+                if self.is_help_focused {
+                    frame.render_widget(Clear, popup_area);
+                    render_help(frame, popup_area, background_color);
+                }
             })?;
 
             if let Event::Key(key) = event::read()?
@@ -336,19 +296,39 @@ impl App {
                             }
                             continue;
                         }
+                        KeyCode::Char('h') => {
+                            self.is_help_focused = false;
+                            self.is_headers_focused = !self.is_headers_focused;
+                            continue;
+                        }
+                        KeyCode::F(1) => {
+                            self.is_headers_focused = false;
+                            self.is_help_focused = !self.is_help_focused;
+                            continue;
+                        }
                         _ => {}
                     }
                 }
 
                 // Input por campo
                 match self.focus.current() {
-                    Field::Url => self.handle_url_input(key),
-                    Field::Body => self.handle_body_input(key),
-                    Field::Method => match key.code {
-                        KeyCode::Left => self.method_selector.previous(),
-                        KeyCode::Right => self.method_selector.next(),
-                        _ => {}
-                    },
+                    Field::Url if !self.is_headers_focused && !self.is_help_focused => {
+                        self.handle_url_input(key)
+                    }
+                    Field::Body if !self.is_headers_focused && !self.is_help_focused => {
+                        self.handle_body_input(key)
+                    }
+                    Field::Method if !self.is_headers_focused && !self.is_help_focused => {
+                        match key.code {
+                            KeyCode::Left if !self.is_headers_focused && !self.is_help_focused => {
+                                self.method_selector.previous()
+                            }
+                            KeyCode::Right if !self.is_headers_focused && !self.is_help_focused => {
+                                self.method_selector.next()
+                            }
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 }
             }

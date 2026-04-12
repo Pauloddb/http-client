@@ -47,7 +47,7 @@ impl MethodSelector {
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(" Method ")
+            .title(Line::from("Method").centered())
             .style(border_style);
 
         let text = if self.is_focused {
