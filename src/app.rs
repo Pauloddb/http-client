@@ -15,12 +15,14 @@ use reqwest::Client;
 
 use crate::{
     components::{
-        body::render_body,
+        body::{format_body_json, render_body},
+        headers::{handle_headers_input, render_headers},
         help::render_help,
         method_selector::MethodSelector,
         response::{handle_response_scroll, render_response},
-        url::render_url,
+        url::{handle_url_input, render_url},
     },
+    config::Config,
     models::{
         focus::{Field, FocusManager},
         method::HttpMethod,
@@ -40,10 +42,11 @@ pub struct App {
     pub client: Client,
     pub is_headers_focused: bool,
     pub is_help_focused: bool,
+    pub config: Config,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(config: Config) -> Self {
         let mut body_editor = TextArea::default(); // ✅ Confirmado [^14^]
 
         // ✅ set_tab_length confirmado na docs [^14^]
@@ -85,14 +88,8 @@ impl App {
             client: Client::new(),
             is_headers_focused: false,
             is_help_focused: false,
+            config,
         }
-    }
-
-    // ✅ &mut self necessário porque TextArea mantém estado interno do cursor
-
-    // ✅ input() aceita KeyEvent diretamente com feature crossterm [^14^][^34^]
-    fn handle_body_input(&mut self, key: crossterm::event::KeyEvent) {
-        self.body_editor.input(key); // Conversão automática crossterm → Input
     }
 
     async fn handle_request(&mut self) {
@@ -135,81 +132,13 @@ impl App {
         }
     }
 
-    fn handle_url_input(&mut self, key: crossterm::event::KeyEvent) {
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return;
-        }
-
-        match key.code {
-            KeyCode::Char(c) => {
-                self.url.insert(self.url_cursor, c);
-                self.url_cursor += 1;
-            }
-            KeyCode::Backspace => {
-                if self.url_cursor > 0 {
-                    self.url_cursor -= 1;
-                    self.url.remove(self.url_cursor);
-                }
-            }
-            KeyCode::Delete => {
-                if self.url_cursor < self.url.len() {
-                    self.url.remove(self.url_cursor);
-                }
-            }
-            KeyCode::Left => {
-                if self.url_cursor > 0 {
-                    self.url_cursor -= 1;
-                }
-            }
-            KeyCode::Right => {
-                if self.url_cursor < self.url.len() {
-                    self.url_cursor += 1;
-                }
-            }
-            KeyCode::Home => self.url_cursor = 0,
-            KeyCode::End => self.url_cursor = self.url.len(),
-            _ => {}
-        }
-    }
-
-    fn format_body_json(&mut self) {
-        let content = self.body_editor.lines().join("\n");
-
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            let formatted = serde_json::to_string_pretty(&json).unwrap_or_default();
-
-            // ✅ TextArea::from() aceita iterator de String [^14^]
-            let lines: Vec<String> = formatted.lines().map(|s| s.to_string()).collect();
-
-            // Recria preservando configurações
-            let mut new_editor = TextArea::from(lines);
-            new_editor.set_tab_length(2);
-            new_editor.set_hard_tab_indent(true);
-            new_editor.set_placeholder_text("{\n  \"key\": \"value\"\n}");
-            new_editor.set_placeholder_style(
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            );
-            new_editor.set_selection_style(
-                Style::default()
-                    .bg(Color::Blue)
-                    .add_modifier(Modifier::BOLD),
-            );
-            new_editor.set_cursor_line_style(Style::default().add_modifier(Modifier::UNDERLINED));
-
-            self.body_editor = new_editor;
-        }
-    }
-
     pub async fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> std::io::Result<()> {
         loop {
             terminal.draw(|frame| {
                 let area = frame.area();
 
-                let background_color = Color::Rgb(20, 20, 20);
-
-                let background = Block::default().style(Style::default().bg(background_color));
+                let background =
+                    Block::default().style(Style::default().bg(self.config.background_color));
                 frame.render_widget(background, area);
 
                 let chunks =
@@ -224,13 +153,9 @@ impl App {
                 let popup_area =
                     area.centered(Constraint::Percentage(60), Constraint::Percentage(60));
 
-                let headers_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title(Line::from("Headers").centered())
-                    .style(Style::default().fg(Color::Yellow).bg(background_color));
-
                 // URL
                 render_url(
+                    self,
                     frame,
                     up_chunks[0],
                     "URL",
@@ -268,18 +193,16 @@ impl App {
                         && !self.is_headers_focused
                         && !self.is_help_focused,
                 );
-                self.method_selector.render(frame, up_chunks[1]);
+                self.method_selector
+                    .render(&self.config, frame, up_chunks[1]);
 
                 // Headers
-                if self.is_headers_focused {
-                    frame.render_widget(Clear, popup_area);
-                    frame.render_widget(headers_block, popup_area);
-                }
+                render_headers(self, frame, popup_area, self.config.background_color);
 
                 // Help
                 if self.is_help_focused {
                     frame.render_widget(Clear, popup_area);
-                    render_help(frame, popup_area, background_color);
+                    render_help(self, frame, popup_area, self.config.background_color);
                 }
             })?;
 
@@ -289,7 +212,9 @@ impl App {
                 // Atalhos globais
                 if key.modifiers == KeyModifiers::CONTROL {
                     match key.code {
-                        KeyCode::Char('q') => break Ok(()),
+                        KeyCode::Char('q') => {
+                            break Ok(());
+                        }
                         KeyCode::Char('r') => {
                             self.handle_request().await;
                             continue;
@@ -308,7 +233,7 @@ impl App {
                         }
                         KeyCode::Char('f') => {
                             if self.focus.is_focused(Field::Body) {
-                                self.format_body_json();
+                                format_body_json(self);
                             }
                             continue;
                         }
@@ -329,10 +254,10 @@ impl App {
                 // Input por campo
                 match self.focus.current() {
                     Field::Url if !self.is_headers_focused && !self.is_help_focused => {
-                        self.handle_url_input(key)
+                        handle_url_input(self, key)
                     }
                     Field::Body if !self.is_headers_focused && !self.is_help_focused => {
-                        self.handle_body_input(key)
+                        self.body_editor.input(key);
                     }
                     Field::Method if !self.is_headers_focused && !self.is_help_focused => {
                         match key.code {

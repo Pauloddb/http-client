@@ -1,4 +1,4 @@
-use crate::models::method::HttpMethod;
+use crate::{config::Config, models::method::HttpMethod};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -36,30 +36,31 @@ impl MethodSelector {
         self.is_focused = focused;
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&self, config: &Config, frame: &mut Frame, area: Rect) {
         let border_style = if self.is_focused {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(config.accent_color)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(config.default_color)
         };
 
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(config.border_type)
             .title(Line::from("Method").centered())
             .style(border_style);
 
         let text = if self.is_focused {
             Line::from(vec![
-                Span::styled("< ", Style::default().fg(Color::Gray)),
+                Span::styled("< ", Style::default().fg(config.default_color)),
                 Span::styled(
                     self.method.to_string(),
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(config.accent_color)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" >", Style::default().fg(Color::Gray)),
+                Span::styled(" >", Style::default().fg(config.default_color)),
             ])
         } else {
             Line::from(Span::styled(

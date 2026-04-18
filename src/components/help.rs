@@ -1,16 +1,18 @@
+use crate::app::App;
 use ratatui::{
     Frame,
     layout::Rect,
     style::{Color, Style},
     text::{Line, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 
-pub fn render_help(frame: &mut Frame, area: Rect, background_color: Color) {
+pub fn render_help(app: &App, frame: &mut Frame, area: Rect, background_color: Color) {
     let block = Block::default()
         .title("Help")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_type(app.config.border_type)
+        .border_style(Style::default().fg(app.config.accent_color))
         .style(Style::default().bg(background_color)); // ← bg no block
 
     // Paragraph com bg no style principal

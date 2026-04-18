@@ -1,12 +1,14 @@
 mod app;
 mod components;
+mod config;
 mod models;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // NOVA API simplificada!
     let mut terminal = ratatui::init();
-    let mut my_app = app::App::new();
+
+    let config = config::load_config();
+    let mut my_app = app::App::new(config);
 
     let result = my_app.run(&mut terminal).await;
 

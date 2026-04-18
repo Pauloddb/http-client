@@ -4,22 +4,25 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Text},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{
+        Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
 };
 
 pub fn render_response(app: &mut App, frame: &mut Frame, area: Rect, is_focused: bool) {
     let border_style = if is_focused {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(app.config.accent_color)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Gray)
+        Style::default().fg(app.config.default_color)
     };
 
     let block = Block::default()
         .title("Response")
         .title_bottom(Line::from("<Ctrl + F1> for help").centered())
         .borders(Borders::ALL)
+        .border_type(app.config.border_type)
         .border_style(border_style);
 
     let inner = block.inner(area);

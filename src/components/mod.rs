@@ -1,4 +1,5 @@
 pub mod body;
+pub mod headers;
 pub mod help;
 pub mod method_selector;
 pub mod response;
